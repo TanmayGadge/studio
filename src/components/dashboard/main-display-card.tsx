@@ -153,6 +153,23 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     }
   };
 
+  const handleStopAnalysis = () => {
+    setIsProcessing(false);
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.src = "";
+      videoRef.current.srcObject = null;
+    }
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d');
+      ctx?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    }
+    setVideoFile(null); // Return to upload screen
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ""; // Reset file input
+    }
+  };
+
 
   const handlePiStreamConnect = () => {
     if (piStreamUrl && videoRef.current) {
@@ -246,7 +263,7 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
             </TabsContent>
 
             <TabsContent value="video-file" className="absolute inset-0 m-0">
-                 {(!videoFile || !isProcessing) && (
+                 {!videoFile || !isProcessing ? (
                     <div className="h-full w-full flex items-center justify-center bg-background">
                         <div className="flex flex-col gap-4 p-4 w-full max-w-md text-center">
                             <p className="text-muted-foreground">Upload a video file to run detection algorithms.</p>
@@ -257,7 +274,7 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
                                 onChange={handleFileChange}
                                 className="file:text-foreground"
                             />
-                            {videoFile && (
+                            {videoFile && !isProcessing && (
                                 <>
                                     <p>Selected: {videoFile.name}</p>
                                     <Button onClick={handleStartAnalysis}>Start Analysis</Button>
@@ -265,7 +282,12 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
                             )}
                         </div>
                     </div>
-                )}
+                ) : null}
+                 {isProcessing && (
+                    <div className="absolute bottom-2 left-2">
+                        <Button variant="destructive" onClick={handleStopAnalysis}>Stop Analysis</Button>
+                    </div>
+                 )}
                  {isProcessing && <div className="absolute bottom-2 right-2 bg-black/50 text-white px-2 py-1 text-xs rounded">
                     ANALYSIS RUNNING
                 </div>}
@@ -276,5 +298,3 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     </Card>
   );
 }
-
-    
