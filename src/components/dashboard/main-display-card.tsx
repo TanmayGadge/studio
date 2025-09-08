@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
@@ -20,9 +20,14 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [activeTab, setActiveTab] = useState("laptop");
+  const isProcessingRef = useRef(isProcessing);
 
 
-  const drawDetections = (detections: AnalyzeVideoOutput) => {
+  useEffect(() => {
+    isProcessingRef.current = isProcessing;
+  }, [isProcessing]);
+
+  const drawDetections = useCallback((detections: AnalyzeVideoOutput) => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
     if (!canvas || !video) return;
@@ -30,8 +35,12 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    // Match canvas dimensions to the video's displayed size
+    const rect = video.getBoundingClientRect();
+    const scaleX = rect.width / video.videoWidth;
+    const scaleY = rect.height / video.videoHeight;
+    canvas.width = rect.width;
+    canvas.height = rect.height;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -40,8 +49,8 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     ctx.lineWidth = 4;
     detections.lanes.forEach(lane => {
       ctx.beginPath();
-      ctx.moveTo(lane.startX, lane.startY);
-      ctx.lineTo(lane.endX, lane.endY);
+      ctx.moveTo(lane.startX * scaleX, lane.startY * scaleY);
+      ctx.lineTo(lane.endX * scaleX, lane.endY * scaleY);
       ctx.stroke();
     });
 
@@ -51,20 +60,27 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     ctx.font = "16px Arial";
     ctx.fillStyle = "rgba(255, 0, 0, 0.9)";
     detections.objects.forEach(obj => {
+      const x = obj.x * scaleX;
+      const y = obj.y * scaleY;
+      const width = obj.width * scaleX;
+      const height = obj.height * scaleY;
       ctx.beginPath();
-      ctx.rect(obj.x, obj.y, obj.width, obj.height);
+      ctx.rect(x, y, width, height);
       ctx.stroke();
-      ctx.fillText(obj.label, obj.x, obj.y - 5);
+      ctx.fillText(obj.label, x, y - 5);
     });
-  };
+  }, [videoRef]);
 
-  const processFrame = async () => {
+  const processFrame = useCallback(async () => {
     const video = videoRef.current;
-    if (!video || video.paused || video.ended || !isProcessing) {
-      if (canvasRef.current) {
-        const ctx = canvasRef.current.getContext('2d');
-        ctx?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-      }
+    if (!video || video.paused || video.ended || !isProcessingRef.current) {
+        if (canvasRef.current) {
+            const ctx = canvasRef.current.getContext('2d');
+            ctx?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        }
+        if (isProcessingRef.current) {
+            requestAnimationFrame(processFrame);
+        }
       return;
     }
 
@@ -86,18 +102,13 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     }
     
     requestAnimationFrame(processFrame);
-  };
+  }, [drawDetections, videoRef]);
   
   useEffect(() => {
     const video = videoRef.current;
     
     const startProcessing = () => {
-      if (activeTab === 'video-file' && videoFile) {
-        // processing is manually started now
-      } else if (activeTab === 'laptop') {
-        setIsProcessing(true); // Auto-start for laptop camera
-        requestAnimationFrame(processFrame);
-      }
+      // Logic moved to handleStartAnalysis and tab change
     };
     
     const stopProcessing = () => {
@@ -116,8 +127,9 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
             video.removeEventListener('pause', stopProcessing);
             video.removeEventListener('ended', stopProcessing);
         }
+        setIsProcessing(false);
     };
-  }, [videoRef, videoFile, isProcessing, activeTab]);
+  }, [videoRef]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -128,15 +140,15 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
         videoRef.current.srcObject = null;
         videoRef.current.src = URL.createObjectURL(file);
         videoRef.current.loop = true;
-        videoRef.current.pause(); // Pause initially
+        videoRef.current.pause();
       }
     }
   };
 
   const handleStartAnalysis = () => {
-    if (videoRef.current && videoFile) {
+    if (videoRef.current && (videoFile || activeTab !== 'video-file') ) {
       setIsProcessing(true);
-      videoRef.current.play();
+      videoRef.current?.play();
       requestAnimationFrame(processFrame);
     }
   };
@@ -145,16 +157,15 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
   const handlePiStreamConnect = () => {
     if (piStreamUrl && videoRef.current) {
       setVideoFile(null);
-      setIsProcessing(false);
       videoRef.current.srcObject = null;
       videoRef.current.src = piStreamUrl;
-      videoRef.current.play();
+      handleStartAnalysis();
     }
   };
 
   const handleTabChange = async (value: string) => {
     setActiveTab(value);
-    setIsProcessing(false);
+    setIsProcessing(false); // Stop processing on tab change
     if (videoRef.current) {
       videoRef.current.pause();
       videoRef.current.src = "";
@@ -172,7 +183,7 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          videoRef.current.play();
+          handleStartAnalysis(); // auto start analysis
         }
       } catch (error) {
         console.error("Error accessing camera:", error);
@@ -197,7 +208,7 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
           </TabsList>
 
           <div className="relative aspect-video w-full overflow-hidden rounded-lg border mt-4">
-             <video ref={videoRef} className="w-full aspect-video rounded-md" autoPlay muted playsInline />
+             <video ref={videoRef} className="w-full h-full aspect-video rounded-md" autoPlay muted playsInline />
              <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none" />
 
             <TabsContent value="laptop" className="absolute inset-0 m-0">
@@ -211,13 +222,13 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
                     </Alert>
                     </div>
                 )}
-                <div className="absolute bottom-2 right-2 bg-black/50 text-white px-2 py-1 text-xs rounded">
-                    REC ●
-                </div>
+                {isProcessing && <div className="absolute bottom-2 right-2 bg-black/50 text-white px-2 py-1 text-xs rounded">
+                    ANALYSIS RUNNING
+                </div>}
             </TabsContent>
             
             <TabsContent value="raspberry-pi" className="absolute inset-0 m-0">
-                <div className="h-full w-full flex items-center justify-center bg-background">
+                {!isProcessing && <div className="h-full w-full flex items-center justify-center bg-background">
                     <div className="flex flex-col gap-4 p-4 w-full max-w-md">
                     <p className="text-muted-foreground text-center">Enter the streaming URL from your Raspberry Pi camera.</p>
                     <Input 
@@ -226,13 +237,16 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
                         value={piStreamUrl}
                         onChange={(e) => setPiStreamUrl(e.target.value)}
                     />
-                    <Button onClick={handlePiStreamConnect}>Connect to Stream</Button>
+                    <Button onClick={handlePiStreamConnect}>Connect & Analyze</Button>
                     </div>
-                </div>
+                </div>}
+                {isProcessing && <div className="absolute bottom-2 right-2 bg-black/50 text-white px-2 py-1 text-xs rounded">
+                    ANALYSIS RUNNING
+                </div>}
             </TabsContent>
 
             <TabsContent value="video-file" className="absolute inset-0 m-0">
-                 {(!videoFile || (videoFile && videoRef.current?.paused)) && (
+                 {(!videoFile || !isProcessing) && (
                     <div className="h-full w-full flex items-center justify-center bg-background">
                         <div className="flex flex-col gap-4 p-4 w-full max-w-md text-center">
                             <p className="text-muted-foreground">Upload a video file to run detection algorithms.</p>
@@ -252,6 +266,9 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
                         </div>
                     </div>
                 )}
+                 {isProcessing && <div className="absolute bottom-2 right-2 bg-black/50 text-white px-2 py-1 text-xs rounded">
+                    ANALYSIS RUNNING
+                </div>}
             </TabsContent>
           </div>
         </Tabs>
@@ -259,3 +276,5 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     </Card>
   );
 }
+
+    
