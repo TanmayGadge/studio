@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { Alert, SafetyStatus } from "@/types";
 import { Header } from "@/components/dashboard/header";
 import { MainDisplayCard } from "@/components/dashboard/main-display-card";
@@ -10,6 +10,7 @@ import { SimulationControls } from "@/components/dashboard/simulation-controls";
 import { AlertLog } from "@/components/dashboard/alert-log";
 import { HazardAlertBanner } from "@/components/dashboard/hazard-alert-banner";
 import { SafetyStatusCard } from "@/components/dashboard/safety-status-card";
+import { useToast } from "@/hooks/use-toast";
 
 export default function DriveSafePage() {
   const [speed, setSpeed] = useState(0);
@@ -18,6 +19,34 @@ export default function DriveSafePage() {
   const [safetyStatus, setSafetyStatus] = useState<SafetyStatus>("Safe");
   const [currentAlert, setCurrentAlert] = useState<Alert | null>(null);
   const [alertLog, setAlertLog] = useState<Alert[]>([]);
+  
+  const { toast } = useToast();
+  const [hasCameraPermission, setHasCameraPermission] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+
+  useEffect(() => {
+    const getCameraPermission = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        setHasCameraPermission(true);
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      } catch (error) {
+        console.error('Error accessing camera:', error);
+        setHasCameraPermission(false);
+        toast({
+          variant: 'destructive',
+          title: 'Camera Access Denied',
+          description: 'Please enable camera permissions in your browser settings to use this app.',
+        });
+      }
+    };
+
+    getCameraPermission();
+  }, [toast]);
 
   useEffect(() => {
     const simulationInterval = setInterval(() => {
@@ -69,7 +98,10 @@ export default function DriveSafePage() {
           
           {/* Left Column */}
           <div className="lg:col-span-3 flex flex-col gap-6">
-            <MainDisplayCard />
+            <MainDisplayCard 
+              videoRef={videoRef} 
+              hasCameraPermission={hasCameraPermission}
+            />
             <AlertLog alerts={alertLog} />
           </div>
 
