@@ -19,6 +19,8 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [activeTab, setActiveTab] = useState("laptop");
+
 
   const drawDetections = (detections: AnalyzeVideoOutput) => {
     const canvas = canvasRef.current;
@@ -90,8 +92,10 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     const video = videoRef.current;
     
     const startProcessing = () => {
-      if (videoFile) {
-        setIsProcessing(true);
+      if (activeTab === 'video-file' && videoFile) {
+        // processing is manually started now
+      } else if (activeTab === 'laptop') {
+        setIsProcessing(true); // Auto-start for laptop camera
         requestAnimationFrame(processFrame);
       }
     };
@@ -113,21 +117,30 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
             video.removeEventListener('ended', stopProcessing);
         }
     };
-  }, [videoRef, videoFile, isProcessing]);
+  }, [videoRef, videoFile, isProcessing, activeTab]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
       setVideoFile(file);
-      setIsProcessing(false); // Stop processing previous video
+      setIsProcessing(false); 
       if (videoRef.current) {
         videoRef.current.srcObject = null;
         videoRef.current.src = URL.createObjectURL(file);
         videoRef.current.loop = true;
-        videoRef.current.play();
+        videoRef.current.pause(); // Pause initially
       }
     }
   };
+
+  const handleStartAnalysis = () => {
+    if (videoRef.current && videoFile) {
+      setIsProcessing(true);
+      videoRef.current.play();
+      requestAnimationFrame(processFrame);
+    }
+  };
+
 
   const handlePiStreamConnect = () => {
     if (piStreamUrl && videoRef.current) {
@@ -135,15 +148,23 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
       setIsProcessing(false);
       videoRef.current.srcObject = null;
       videoRef.current.src = piStreamUrl;
+      videoRef.current.play();
     }
   };
 
   const handleTabChange = async (value: string) => {
+    setActiveTab(value);
     setIsProcessing(false);
     if (videoRef.current) {
       videoRef.current.pause();
       videoRef.current.src = "";
       videoRef.current.srcObject = null;
+    }
+    
+    // Clear canvas when switching tabs
+    if(canvasRef.current) {
+        const ctx = canvasRef.current.getContext('2d');
+        ctx?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     }
 
     if (value === "laptop") {
@@ -158,7 +179,7 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
       }
     } else if (value === "video-file" && videoFile && videoRef.current) {
        videoRef.current.src = URL.createObjectURL(videoFile);
-       videoRef.current.play();
+       // Don't auto-play, wait for button click
     }
   };
 
@@ -211,19 +232,26 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
             </TabsContent>
 
             <TabsContent value="video-file" className="absolute inset-0 m-0">
-                <div className="h-full w-full flex items-center justify-center bg-background">
-                    <div className="flex flex-col gap-4 p-4 w-full max-w-md text-center">
-                        <p className="text-muted-foreground">Upload a video file to run detection algorithms.</p>
-                        <Input 
-                            type="file" 
-                            accept="video/*" 
-                            ref={fileInputRef}
-                            onChange={handleFileChange}
-                            className="file:text-foreground"
-                        />
-                        {videoFile && <p>Selected: {videoFile.name}</p>}
+                 {(!videoFile || (videoFile && videoRef.current?.paused)) && (
+                    <div className="h-full w-full flex items-center justify-center bg-background">
+                        <div className="flex flex-col gap-4 p-4 w-full max-w-md text-center">
+                            <p className="text-muted-foreground">Upload a video file to run detection algorithms.</p>
+                            <Input 
+                                type="file" 
+                                accept="video/*" 
+                                ref={fileInputRef}
+                                onChange={handleFileChange}
+                                className="file:text-foreground"
+                            />
+                            {videoFile && (
+                                <>
+                                    <p>Selected: {videoFile.name}</p>
+                                    <Button onClick={handleStartAnalysis}>Start Analysis</Button>
+                                </>
+                            )}
+                        </div>
                     </div>
-                </div>
+                )}
             </TabsContent>
           </div>
         </Tabs>
