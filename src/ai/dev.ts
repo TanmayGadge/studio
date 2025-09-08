@@ -1,1 +1,5 @@
-// Flows will be imported for their side effects in this file.
+import { config } from 'dotenv';
+config();
+
+import '@/ai/flows/object-detection-ignore-tool.ts';
+import '@/ai/flows/lane-departure-object-classification-tool.ts';
