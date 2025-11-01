@@ -1,8 +1,6 @@
 "use client";
 import React, { useState, useRef, useEffect, useCallback } from "react";
-// *** NEW IMPORTS ***
-import { InferenceSession, Tensor } from "onnxruntime-web";
-
+import { InferenceSession, Tensor, env } from "onnxruntime-web";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
@@ -12,15 +10,11 @@ import { Laptop, Router, Video, Loader2 } from "lucide-react";
 
 // --- YOLOv8 ONNX Helper Functions ---
 
-// Model input dimensions
 const MODEL_WIDTH = 640;
 const MODEL_HEIGHT = 640;
+const CONFIDENCE_THRESHOLD = 0.5; 
+const IOU_THRESHOLD = 0.45; 
 
-/**
- * Preprocesses the video frame by resizing and normalizing it.
- * @param video The HTMLVideoElement
- * @returns A tuple containing the processed tensor and the scaling ratio
- */
 async function preprocess(
   video: HTMLVideoElement
 ): Promise<[Tensor, number]> {
@@ -30,27 +24,24 @@ async function preprocess(
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Could not get canvas context");
 
-  // Calculate scaling factor to maintain aspect ratio and "letterbox"
   const scale = Math.min(MODEL_WIDTH / video.videoWidth, MODEL_HEIGHT / video.videoHeight);
   const scaledWidth = video.videoWidth * scale;
   const scaledHeight = video.videoHeight * scale;
   const x = (MODEL_WIDTH - scaledWidth) / 2;
   const y = (MODEL_HEIGHT - scaledHeight) / 2;
 
-  ctx.fillStyle = "#000000"; // Letterbox with black
+  ctx.fillStyle = "#000000"; 
   ctx.fillRect(0, 0, MODEL_WIDTH, MODEL_HEIGHT);
   ctx.drawImage(video, x, y, scaledWidth, scaledHeight);
 
   const imageData = ctx.getImageData(0, 0, MODEL_WIDTH, MODEL_HEIGHT);
   const { data } = imageData;
   
-  // Convert from RGBA (0-255) to NCHW Float32 (0.0-1.0)
-  // NCHW = [batch, channels, height, width]
   const floatData = new Float32Array(3 * MODEL_WIDTH * MODEL_HEIGHT);
   for (let i = 0; i < MODEL_HEIGHT * MODEL_WIDTH; i++) {
-    floatData[i] = data[i * 4 + 0] / 255.0;           // R
-    floatData[i + MODEL_WIDTH * MODEL_HEIGHT] = data[i * 4 + 1] / 255.0; // G
-    floatData[i + 2 * MODEL_WIDTH * MODEL_HEIGHT] = data[i * 4 + 2] / 255.0; // B
+    floatData[i] = data[i * 4 + 0] / 255.0;
+    floatData[i + MODEL_WIDTH * MODEL_HEIGHT] = data[i * 4 + 1] / 255.0;
+    floatData[i + 2 * MODEL_WIDTH * MODEL_HEIGHT] = data[i * 4 + 2] / 255.0;
   }
 
   const tensor = new Tensor("float32", floatData, [1, 3, MODEL_HEIGHT, MODEL_WIDTH]);
@@ -58,77 +49,109 @@ async function preprocess(
 }
 
 interface DetectedObject {
-  bbox: [number, number, number, number]; // [x1, y1, width, height]
+  bbox: [number, number, number, number];
   class: string;
   score: number;
 }
 
-/**
- * Post-processes the raw output tensor from the YOLOv8 model.
- * @param outputTensor The output tensor from the model
- * @param scale The scaling factor used during preprocessing
- * @returns An array of detected objects
- */
-function postprocess(outputTensor: Tensor, scale: number): DetectedObject[] {
+function postprocess(
+  outputTensor: Tensor, 
+  scale: number, 
+  videoWidth: number, 
+  videoHeight: number
+): DetectedObject[] {
   const data = outputTensor.data as Float32Array;
-  // output shape: [batch, 84, 8400] (84 = 4 box + 80 classes)
   const numClasses = 80;
-  const numBoxes = outputTensor.dims[2]; // 8400
-  const detections: DetectedObject[] = [];
+  const numBoxes = outputTensor.dims[2]; 
 
-  // Transpose the data from [batch, 84, 8400] to [batch, 8400, 84]
-  // to make it easier to iterate over boxes
-  const transposedData = new Float32Array(numBoxes * (numClasses + 4));
+  const scaledWidth = videoWidth * scale;
+  const scaledHeight = videoHeight * scale;
+  const xOffset = (MODEL_WIDTH - scaledWidth) / 2;
+  const yOffset = (MODEL_HEIGHT - scaledHeight) / 2;
+  
+  const boxes: DetectedObject[] = [];
+  
   for (let i = 0; i < numBoxes; i++) {
-    for (let j = 0; j < numClasses + 4; j++) {
-      transposedData[i * (numClasses + 4) + j] = data[j * numBoxes + i];
-    }
-  }
-
-  for (let i = 0; i < numBoxes; i++) {
-    const boxData = transposedData.subarray(i * (numClasses + 4), (i + 1) * (numClasses + 4));
-    const [x_center, y_center, width, height] = boxData.slice(0, 4);
-    
-    // Find the class with the highest score
     let maxScore = 0;
     let maxClassId = -1;
     for (let j = 0; j < numClasses; j++) {
-      const score = boxData[j + 4];
+      const score = data[(j + 4) * numBoxes + i];
       if (score > maxScore) {
         maxScore = score;
         maxClassId = j;
       }
     }
 
-    // Apply confidence threshold
-    if (maxScore > 0.45) { // Confidence threshold
-      // Calculate letterbox offsets
-      const xOffset = (MODEL_WIDTH - MODEL_WIDTH * scale) / 2;
-      const yOffset = (MODEL_HEIGHT - MODEL_HEIGHT * scale) / 2;
+    if (maxScore > CONFIDENCE_THRESHOLD) {
+      const x_center = data[0 * numBoxes + i];
+      const y_center = data[1 * numBoxes + i];
+      const width = data[2 * numBoxes + i];
+      const height = data[3 * numBoxes + i];
 
-      // Convert from [x_center, y_center, w, h] to [x1, y1, w, h]
-      // and scale back to original video dimensions
       const x1 = (x_center - width / 2 - xOffset) / scale;
       const y1 = (y_center - height / 2 - yOffset) / scale;
       const w = width / scale;
       const h = height / scale;
 
-      detections.push({
+      boxes.push({
         class: COCO_CLASSES[maxClassId] || "unknown",
         score: maxScore,
         bbox: [x1, y1, w, h],
       });
     }
   }
-  // Note: This simple postprocessing doesn't include NMS (Non-Maximum Suppression)
-  // For a production app, you'd add NMS here to merge overlapping boxes.
-  return detections;
+
+  return nms(boxes, IOU_THRESHOLD);
 }
 
-// --- End of Helper Functions ---
+function nms(boxes: DetectedObject[], iouThreshold: number): DetectedObject[] {
+  boxes.sort((a, b) => b.score - a.score);
+  const selectedBoxes: DetectedObject[] = [];
+  
+  while (boxes.length > 0) {
+    const currentBox = boxes.shift()!;
+    selectedBoxes.push(currentBox);
+    
+    boxes = boxes.filter(box => {
+      if (box.class !== currentBox.class) {
+        return true; 
+      }
+      const iou = calculateIoU(currentBox.bbox, box.bbox);
+      return iou < iouThreshold; 
+    });
+  }
+  return selectedBoxes;
+}
 
+function calculateIoU(box1: [number, number, number, number], box2: [number, number, number, number]): number {
+  const [x1, y1, w1, h1] = box1;
+  const [x2, y2, w2, h2] = box2;
+  const r1 = x1 + w1;
+  const b1 = y1 + h1;
+  const r2 = x2 + w2;
+  const b2 = y2 + h2;
+  
+  const interX1 = Math.max(x1, x2);
+  const interY1 = Math.max(y1, y2);
+  const interX2 = Math.min(r1, r2);
+  const interY2 = Math.min(b1, b2);
+  
+  const interWidth = Math.max(0, interX2 - interX1);
+  const interHeight = Math.max(0, interY2 - interY1);
+  const interArea = interWidth * interHeight;
+  
+  const area1 = w1 * h1;
+  const area2 = w2 * h2;
+  const unionArea = area1 + area2 - interArea;
+  
+  if (unionArea === 0) return 0;
+  return interArea / unionArea;
+}
 
-// *** Main Component ***
+interface MainDisplayCardProps {
+  videoRef: React.RefObject<HTMLVideoElement>;
+  hasCameraPermission: boolean;
+}
 
 export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCardProps) {
   const [piStreamUrl, setPiStreamUrl] = useState("");
@@ -138,9 +161,9 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
   const [isProcessing, setIsProcessing] = useState(false);
   const [activeTab, setActiveTab] = useState("laptop");
   
-  // *** NEW MODEL STATE ***
   const [model, setModel] = useState<InferenceSession | null>(null);
   const [modelLoading, setModelLoading] = useState(true);
+  const [gpuInfo, setGpuInfo] = useState<string>("");
 
   const animationFrameId = useRef<number | null>(null);
   const isProcessingRef = useRef(isProcessing);
@@ -148,22 +171,63 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     isProcessingRef.current = isProcessing;
   }, [isProcessing]);
 
-  // Load the ONNX model
+  // Load the ONNX model with NVIDIA GPU priority
   useEffect(() => {
     async function loadModel() {
+      let session: InferenceSession;
+      let adapterInfo = "";
+      
       try {
-        console.log("Loading ONNX model...");
-        // This file MUST be in the /public folder
-        const session = await InferenceSession.create("/yolov8n.onnx", {
-          executionProviders: ["wasm"], // 'wasm' is the most compatible
-        });
+        console.log("Configuring WebGPU for high-performance GPU (NVIDIA RTX 3050)...");
         
-        setModel(session);
-        setModelLoading(false);
-        console.log("ONNX model loaded.");
-      } catch (e) {
-        console.error("Failed to load ONNX model:", e);
+        // Check if WebGPU is available
+        const gpu = (navigator as any).gpu;
+        if (gpu) {
+          try {
+            // Request high-performance adapter (NVIDIA GPU)
+            const adapter = await gpu.requestAdapter({
+              powerPreference: "high-performance"
+            });
+            
+            if (adapter) {
+              // Get adapter info
+              const info = await adapter.requestAdapterInfo();
+              adapterInfo = `GPU: ${info.vendor} ${info.architecture || info.device || 'Unknown'}`;
+              console.log("Selected GPU adapter:", adapterInfo);
+              console.log("Adapter details:", info);
+              
+              // Create device from the adapter
+              const device = await adapter.requestDevice();
+              
+              // Set the adapter in ONNX Runtime env (this is the correct way, not powerPreference)
+              env.webgpu.adapter = adapter;
+              
+              setGpuInfo(adapterInfo);
+            }
+          } catch (adapterError: any) {
+            console.warn("Could not manually select adapter:", adapterError);
+          }
+        } else {
+          console.warn("WebGPU not available in this browser");
+        }
+        
+        console.log("Loading YOLOv8s ONNX model with WebGPU...");
+        session = await InferenceSession.create("/yolov8s.onnx", {
+          executionProviders: ["webgpu"]
+        });
+        console.log("Successfully loaded model with WebGPU.");
+        
+      } catch (e: any) { 
+        console.warn("WebGPU failed, falling back to CPU (Wasm).", e.message);
+        session = await InferenceSession.create("/yolov8s.onnx", {
+          executionProviders: ["wasm"]
+        });
+        console.log("Successfully loaded model with CPU (Wasm).");
+        setGpuInfo("CPU (WebGPU not available)");
       }
+        
+      setModel(session);
+      setModelLoading(false);
     }
     loadModel();
   }, []);
@@ -176,7 +240,6 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Match canvas size to video display size
     const rect = video.getBoundingClientRect();
     if (canvas.width !== rect.width || canvas.height !== rect.height) {
         canvas.width = rect.width;
@@ -188,12 +251,10 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     ctx.font = font;
     ctx.textBaseline = "top";
 
-    // Scale from video's original resolution to canvas's displayed resolution
     const scaleX = canvas.width / video.videoWidth;
     const scaleY = canvas.height / video.videoHeight;
 
     detections.forEach(obj => {
-      // Filter for objects you care about
       if (obj.class === 'car' || obj.class === 'person' || obj.class === 'truck' || obj.class === 'bicycle' || obj.class === 'bus' || obj.class === 'motorcycle') {
         const [x, y, width, height] = obj.bbox;
         
@@ -202,7 +263,7 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
         const drawWidth = width * scaleX;
         const drawHeight = height * scaleY;
 
-        ctx.strokeStyle = "rgba(0, 255, 0, 0.9)"; // Green
+        ctx.strokeStyle = "rgba(0, 255, 0, 0.9)";
         ctx.lineWidth = 2;
         ctx.strokeRect(drawX, drawY, drawWidth, drawHeight);
 
@@ -217,7 +278,6 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     });
   }, [videoRef]);
 
-  // *** UPDATED DETECTION LOOP with ONNX ***
   const processFrame = useCallback(async () => {
     if (!isProcessingRef.current) {
       animationFrameId.current = null;
@@ -227,20 +287,16 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
     if (model && videoRef.current && videoRef.current.readyState >= 3 && !videoRef.current.paused) {
       const video = videoRef.current;
       try {
-        // 1. Preprocess the image
         const [tensor, scale] = await preprocess(video);
         
-        // 2. Run inference
         const feeds = { [model.inputNames[0]]: tensor };
         const results = await model.run(feeds);
         
-        // 3. Postprocess the output
         const outputTensor = results[model.outputNames[0]];
-        const detections = postprocess(outputTensor, scale);
+        const detections = postprocess(outputTensor, scale, video.videoWidth, video.videoHeight);
         
         drawDetections(detections);
-
-      } catch (error) {
+      } catch (error: any) { 
         console.error("Error during detection:", error);
       }
     }
@@ -250,7 +306,6 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
   }, [model, videoRef, drawDetections]); 
 
   
-  // This logic is all correct from the last fix
   useEffect(() => {
     const video = videoRef.current;
     const stopProcessingLoop = () => {
@@ -294,7 +349,7 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
           animationFrameId.current = requestAnimationFrame(processFrame);
         }
       })
-      .catch(e => console.error("Error playing video:", e));
+      .catch((e: any) => console.error("Error playing video:", e)); 
   };
 
   const handleStopAnalysis = () => {
@@ -353,7 +408,7 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
           videoRef.current.srcObject = stream;
           handleStartAnalysis();
         }
-      } catch (error) {
+      } catch (error: any) { 
         console.error("Error accessing camera:", error);
       }
     } else if (value === "video-file" && videoFile && videoRef.current) {
@@ -402,7 +457,14 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
             {modelLoading && (
                 <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center text-white z-10">
                     <Loader2 className="h-12 w-12 animate-spin mb-4" />
-                    <p>Loading YOLOv8 Model...</p>
+                    <p>Loading YOLOv8s Model...</p>
+                    <p className="text-sm text-gray-400 mt-2">Requesting high-performance GPU...</p>
+                </div>
+            )}
+
+            {gpuInfo && (
+                <div className="absolute top-2 left-2 bg-black/70 text-white px-2 py-1 text-xs rounded z-20">
+                    {gpuInfo}
                 </div>
             )}
 
@@ -479,7 +541,6 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
   );
 }
 
-// Minimal class list for COCO (80 classes)
 const COCO_CLASSES = [
   'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 
   'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 
