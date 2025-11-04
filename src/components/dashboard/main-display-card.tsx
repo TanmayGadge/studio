@@ -42,7 +42,76 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
   const lastFrameTimeRef = useRef<number>(0);
   const detectionCountRef = useRef<number>(0);
 
-// Load the Worker
+  const isProcessingRef = useRef<boolean>(isProcessing);
+  const detectionLoopRef = useRef<() => void>();
+
+  // Add drawDetections as a dependency
+
+
+  // Keep the isProcessingRef in sync with the state
+  useEffect(() => {
+    isProcessingRef.current = isProcessing;
+  }, [isProcessing]);
+
+  const drawDetections = useCallback((detections: DetectedObject[]) => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+
+    // Exit if video or canvas isn't ready, or if video has no dimensions
+    if (!canvas || !video || video.videoWidth === 0 || video.videoHeight === 0) {
+      return;
+    }
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    // --- THIS IS THE FIX ---
+    // Set the canvas drawing surface resolution to match the video's
+    // intrinsic resolution.
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+      canvas.width = video.videoWidth;   // e.g., 1280
+      canvas.height = video.videoHeight; // e.g., 720
+    }
+    // -----------------------
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const font = "16px Arial";
+    ctx.font = font;
+    ctx.textBaseline = "top";
+
+    // No scaling is needed! The coordinate systems now match.
+    // The CSS `w-full h-full` on the canvas handles the visual scaling.
+
+    detections.forEach(obj => {
+      // Filter for common road objects
+      if (['car', 'person', 'truck', 'bicycle', 'bus', 'motorcycle', 'traffic light', 'stop sign'].includes(obj.class)) {
+        
+        // Use coordinates directly from the worker
+        const [x, y, width, height] = obj.bbox;
+
+        // Dynamic color based on class
+        const color = obj.class === 'person' || obj.class === 'bicycle' || obj.class === 'motorcycle'
+          ? "rgba(255, 0, 0, 0.9)" // Red for vulnerable road users
+          : "rgba(0, 255, 0, 0.9)"; // Green for vehicles
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, width, height); // Draw using original coordinates
+
+        ctx.fillStyle = color;
+        const text = `${obj.class} (${Math.round(obj.score * 100)}%)`;
+        const textWidth = ctx.measureText(text).width;
+        ctx.fillRect(x, y, textWidth + 4, 18); // Draw using original coordinates
+
+        ctx.fillStyle = "#FFFFFF";
+        ctx.fillText(text, x + 2, y); // Draw using original coordinates
+      }
+    });
+
+  }, [videoRef]); // No dependencies changed
+
+
+   // Load the Worker
   useEffect(() => {
     if (!workerRef.current) {
       // ** THIS IS THE NEW KEY CHANGE **
@@ -70,13 +139,22 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
           detectionCountRef.current++;
           setDebugInfo(`FPS: ${fps.toFixed(1)} | Detections: ${detections.length} | Total Frames: ${detectionCountRef.current}`);
 
-          // Mark worker as free for the next frame
+          // Mark worker as free
           isWorkerBusy.current = false;
+
+          // --- *** THIS IS THE DAISY-CHAIN *** ---
+          // The worker is done, so now we can schedule the *next* frame.
+          // We use isProcessingRef to check the *current* state.
+          if (isProcessingRef.current && detectionLoopRef.current) {
+            animationFrameRef.current = requestAnimationFrame(detectionLoopRef.current);
+          }
+          // ----------------------------------------
 
         } else if (type === "error") {
           console.error("Worker Error:", message);
           setDebugInfo(`Error: ${message}`);
           setIsProcessing(false); // Stop on error
+          isWorkerBusy.current = false; // Free worker
         }
       };
 
@@ -90,114 +168,94 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
       workerRef.current?.terminate();
       workerRef.current = null;
     };
-  }, []); // Empty dependency array ensures this runs only once
+  }, [drawDetections]);
 
-  const drawDetections = useCallback((detections: DetectedObject[]) => {
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (!canvas || !video || video.videoWidth === 0) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const rect = video.getBoundingClientRect();
-    if (canvas.width !== rect.width || canvas.height !== rect.height) {
-        canvas.width = rect.width;
-        canvas.height = rect.height;
-    }
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const font = "16px Arial";
-    ctx.font = font;
-    ctx.textBaseline = "top";
-
-    const scaleX = canvas.width / video.videoWidth;
-    const scaleY = canvas.height / video.videoHeight;
-
-    detections.forEach(obj => {
-      // Filter for common road objects
-      if (['car', 'person', 'truck', 'bicycle', 'bus', 'motorcycle', 'traffic light', 'stop sign'].includes(obj.class)) {
-        const [x, y, width, height] = obj.bbox;
-        
-        const drawX = x * scaleX;
-        const drawY = y * scaleY;
-        const drawWidth = width * scaleX;
-        const drawHeight = height * scaleY;
-
-        // Dynamic color based on class
-        const color = obj.class === 'person' || obj.class === 'bicycle' || obj.class === 'motorcycle' 
-          ? "rgba(255, 0, 0, 0.9)" // Red for vulnerable road users
-          : "rgba(0, 255, 0, 0.9)"; // Green for vehicles
-
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(drawX, drawY, drawWidth, drawHeight);
-
-        ctx.fillStyle = color;
-        const text = `${obj.class} (${Math.round(obj.score * 100)}%)`;
-        const textWidth = ctx.measureText(text).width;
-        ctx.fillRect(drawX, drawY, textWidth + 4, 18);
-
-        ctx.fillStyle = "#FFFFFF";
-        ctx.fillText(text, drawX + 2, drawY);
-      }
-    });
-    
-  }, [videoRef]); // videoRef is stable, so this function is stable
-
-  // Detection loop
+ // Detection loop
   const detectionLoop = useCallback(async () => {
-    if (!isProcessing || !workerRef.current) {
+    // This function no longer loops.
+    // It is called once per frame, "daisy-chained" by the worker's onmessage.
+    
+    if (!isProcessingRef.current || !workerRef.current) {
+      // Failsafe, should not be called if not processing
       return;
     }
 
     const video = videoRef.current;
+
+    // Check if video is ready
     if (!video || video.paused || video.ended || video.readyState < 2 || video.videoWidth === 0) {
-      // Video not ready, try again on next frame
-      animationFrameRef.current = requestAnimationFrame(detectionLoop);
+      // Video not ready.
+      // Just try again on the next animation frame.
+      if (isProcessingRef.current) { // Check again
+        animationFrameRef.current = requestAnimationFrame(detectionLoop);
+      }
       return;
     }
 
-    // Only send a new frame if the worker isn't busy
-    if (!isWorkerBusy.current) {
-      isWorkerBusy.current = true; // Mark as busy
+    // Failsafe check. In this pattern, the loop should only be called when busy is false.
+    if (isWorkerBusy.current) {
+      console.warn("Loop called while worker busy. Re-scheduling.");
+      if (isProcessingRef.current) {
+        animationFrameRef.current = requestAnimationFrame(detectionLoop);
+      }
+      return;
+    }
 
-      try {
-        // Create an ImageBitmap from the video (efficient for workers)
-        const videoFrame = await createImageBitmap(video);
+    isWorkerBusy.current = true; // Mark as busy
 
-        // Send the frame to the worker.
-        // The [videoFrame] part is a "transferable object",
-        // which gives the worker ownership and avoids copying.
-        workerRef.current.postMessage({
-          type: "detect",
-          data: {
-            videoFrame: videoFrame,
-            videoWidth: video.videoWidth,
-            videoHeight: video.videoHeight
-          }
-        }, [videoFrame]);
+    try {
+      // Create an ImageBitmap from the video (efficient for workers)
+      const videoFrame = await createImageBitmap(video);
 
-      } catch (e) {
-        console.error("Error creating ImageBitmap:", e);
-        isWorkerBusy.current = false; // Free worker on error
+      // Send the frame to the worker.
+      workerRef.current.postMessage({
+        type: "detect",
+        data: {
+          videoFrame: videoFrame,
+          videoWidth: video.videoWidth,
+          videoHeight: video.videoHeight
+        }
+      }, [videoFrame]);
+
+      // *** SUCCESS ***
+      // The frame is sent. Now we WAIT for onmessage.
+      // We DO NOT call requestAnimationFrame here.
+
+    } catch (e) {
+      console.error("Error creating ImageBitmap or posting message:", e);
+      isWorkerBusy.current = false; // Free worker on error
+      
+      // An error occurred, so the daisy-chain is broken.
+      // Re-schedule for next animation frame to try again.
+      if (isProcessingRef.current) {
+        animationFrameRef.current = requestAnimationFrame(detectionLoop);
       }
     }
 
-    // Continue the loop
-    animationFrameRef.current = requestAnimationFrame(detectionLoop);
-    
-  }, [isProcessing, videoRef]); // Dependencies are stable
+  }, [videoRef]); // videoRef is the only real dependency
 
-  // Start/Stop detection loop
+
+  useEffect(() => {
+    detectionLoopRef.current = detectionLoop;
+  }, [detectionLoop]);
+
+// Start/Stop detection loop
   useEffect(() => {
     if (isProcessing && !animationFrameRef.current) {
-      console.log("Starting detection loop");
+      console.log("Starting detection loop (kicking off first frame)");
       lastFrameTimeRef.current = performance.now();
       detectionCountRef.current = 0;
-      animationFrameRef.current = requestAnimationFrame(detectionLoop);
+      
+      // --- *** THIS IS THE KICK-OFF *** ---
+      // We only call this *once* to start the chain.
+      // The onmessage handler will take over from here.
+      animationFrameRef.current = requestAnimationFrame(detectionLoop); 
+    
     } else if (!isProcessing && animationFrameRef.current) {
       console.log("Stopping detection loop");
+      // isProcessingRef.current will be false,
+      // so the onmessage handler won't schedule any new frames.
+      // We also cancel any pending frame just in case.
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }

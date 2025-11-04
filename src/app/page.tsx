@@ -11,6 +11,7 @@ import { AlertLog } from "@/components/dashboard/alert-log";
 import { HazardAlertBanner } from "@/components/dashboard/hazard-alert-banner";
 import { SafetyStatusCard } from "@/components/dashboard/safety-status-card";
 import { useToast } from "@/hooks/use-toast";
+import { ServerDisplayCard } from "@/components/serverDisplay/ServerDisplayCard";
 
 export default function DriveSafePage() {
   const [speed, setSpeed] = useState(0);
@@ -98,9 +99,9 @@ export default function DriveSafePage() {
           
           {/* Left Column */}
           <div className="lg:col-span-3 flex flex-col gap-6">
-            <MainDisplayCard 
-              videoRef={videoRef} 
-              hasCameraPermission={hasCameraPermission}
+            <ServerDisplayCard  
+              // videoRef={videoRef} 
+              // hasCameraPermission={hasCameraPermission}
             />
             <AlertLog alerts={alertLog} />
           </div>
