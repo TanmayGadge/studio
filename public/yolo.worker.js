@@ -61,7 +61,7 @@ async function preprocess(videoFrame) {
   return [tensor, scale];
 }
 
-// *** THIS IS THE NEW, CORRECT POSTPROCESS FUNCTION ***
+
 function postprocess(
   outputTensor, 
   scale, 
@@ -102,9 +102,13 @@ function postprocess(
     }
 
     if (maxScore > CONFIDENCE_THRESHOLD) {
-      // un-letterbox the coordinates
-      const x1 = (x_center - width / 2 - xOffset) / scale;
-      const y1 = (y_center - height / 2 - yOffset) / scale;
+      // Convert from center coords to corner coords (still in 640x640 space)
+      const x1_letterboxed = x_center - width / 2;
+      const y1_letterboxed = y_center - height / 2;
+      
+      // Remove letterbox padding, then scale back to original frame size
+      const x1 = (x1_letterboxed - xOffset) / scale;
+      const y1 = (y1_letterboxed - yOffset) / scale;
       const w = width / scale;
       const h = height / scale;
 

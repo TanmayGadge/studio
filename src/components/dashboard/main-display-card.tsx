@@ -49,7 +49,7 @@ export function MainDisplayCard({ videoRef, hasCameraPermission }: MainDisplayCa
       // We load the worker directly from the /public folder.
       // This stops the Next.js bundler from processing it,
       // which fixes all the "Invalid URL" errors.
-      const worker = new Worker('/yolo.worker.js');
+      const worker = new Worker('/yolo.worker.js?v=2');
       workerRef.current = worker;
 
       // Listen for messages from the worker
