@@ -1,7 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2017",
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "lib": ["dom", "dom.iterable", "esnext", "webworker"], // <--- FIX 1: Corrected casing
+    // "types": ["@webgpu/types","@webgpu/types/unstable",  "next"],                 // <--- FIX 2: Added this line
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
